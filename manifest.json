@@ -1,0 +1,68 @@
+{
+  "name": "Monitor de Conducción ITSON",
+  "short_name": "DrivingMonitor",
+  "description": "Aplicación para detectar patrones de conducción agresiva mediante GPS y acelerómetro",
+  "version": "2.0.0",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#2196F3",
+  "background_color": "#667eea",
+  "lang": "es",
+  "scope": "./",
+  "categories": ["research", "automotive", "productivity"],
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192' fill='%232196F3'%3E%3Crect width='192' height='192' rx='24' fill='%232196F3'/%3E%3Ctext x='96' y='120' text-anchor='middle' font-size='80' fill='white'%3E🚗%3C/text%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512' fill='%232196F3'%3E%3Crect width='512' height='512' rx='64' fill='%232196F3'/%3E%3Ctext x='256' y='320' text-anchor='middle' font-size='200' fill='white'%3E🚗%3C/text%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ],
+  "features": [
+    "accelerometer",
+    "gyroscope", 
+    "gps",
+    "offline",
+    "wake-lock"
+  ],
+  "permissions": [
+    "geolocation",
+    "devicemotion",
+    "wake-lock"
+  ],
+  "prefer_related_applications": false,
+  "display_override": ["standalone", "minimal-ui"],
+  "shortcuts": [
+    {
+      "name": "Iniciar Experimento",
+      "short_name": "Iniciar",
+      "description": "Iniciar grabación de datos de conducción",
+      "url": "./index.html?action=start",
+      "icons": [
+        {
+          "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Ccircle cx='48' cy='48' r='40' fill='%234CAF50'/%3E%3Ctext x='48' y='58' text-anchor='middle' font-size='30' fill='white'%3E▶%3C/text%3E%3C/svg%3E",
+          "sizes": "96x96",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Modo Prueba",
+      "short_name": "Prueba",
+      "description": "Verificar sensores del dispositivo",
+      "url": "./index.html?action=test",
+      "icons": [
+        {
+          "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Ccircle cx='48' cy='48' r='40' fill='%23FF9800'/%3E%3Ctext x='48' y='58' text-anchor='middle' font-size='30' fill='white'%3E🔧%3C/text%3E%3C/svg%3E",
+          "sizes": "96x96",
+          "type": "image/svg+xml"
+        }
+      ]
+    }
+  ]
+}

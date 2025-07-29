@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor Conducción - ITSON v2.0</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#2196F3">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==">
+</head>
+<body>
+    <div class="header">
+        <h1>🚗 Monitor de Conducción v2.0</h1>
+        <p>ITSON - Detección Patrones Agresivos</p>
+        <div class="connection-status" id="connectionStatus">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Verificando sensores...</span>
+        </div>
+    </div>
+    
+    <div class="container">
+        <!-- Configuración Participante -->
+        <div class="config-section">
+            <input type="text" 
+                   id="participantId" 
+                   class="participant-input" 
+                   placeholder="ID Participante (ej: P01)"
+                   maxlength="10">
+            
+            <select id="groupType" class="group-select">
+                <option value="">Seleccionar Grupo</option>
+                <option value="control">Grupo Control (Sin Feedback)</option>
+                <option value="experimental">Grupo Experimental (Con Feedback)</option>
+            </select>
+        </div>
+
+        <!-- Modo de Operación -->
+        <div class="mode-selector">
+            <button id="testModeBtn" class="btn btn-test">
+                🔧 Modo Prueba
+            </button>
+            <button id="recordModeBtn" class="btn btn-primary">
+                📊 Modo Experimento
+            </button>
+        </div>
+
+        <!-- Panel de Diagnóstico (oculto por defecto) -->
+        <div id="diagnosticPanel" class="diagnostic-panel hidden">
+            <h3>🔍 Diagnóstico de Sensores</h3>
+            <div class="sensor-grid">
+                <div class="sensor-card">
+                    <div class="sensor-header">
+                        <span class="sensor-icon">📍</span>
+                        <span>GPS</span>
+                        <span class="sensor-status" id="gpsStatus">⏳</span>
+                    </div>
+                    <div class="sensor-data">
+                        <div>Lat: <span id="gpsLat">--</span></div>
+                        <div>Lon: <span id="gpsLon">--</span></div>  
+                        <div>Precisión: <span id="gpsAccuracy">--</span>m</div>
+                        <div>Velocidad: <span id="gpsSpeed">--</span> km/h</div>
+                    </div>
+                </div>
+                
+                <div class="sensor-card">
+                    <div class="sensor-header">
+                        <span class="sensor-icon">📱</span>
+                        <span>Acelerómetro</span>
+                        <span class="sensor-status" id="accelStatus">⏳</span>
+                    </div>
+                    <div class="sensor-data">
+                        <div>X: <span id="accelX">--</span></div>
+                        <div>Y: <span id="accelY">--</span></div>
+                        <div>Z: <span id="accelZ">--</span></div>
+                        <div>Magnitud: <span id="accelMag">--</span></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="calibration-status">
+                <div class="cal-item">
+                    <span>📍 GPS Ready:</span> 
+                    <span id="gpsReady" class="status-indicator">❌</span>
+                </div>
+                <div class="cal-item">
+                    <span>📱 Accel Ready:</span> 
+                    <span id="accelReady" class="status-indicator">❌</span>
+                </div>
+                <div class="cal-item">
+                    <span>🔋 Batería:</span> 
+                    <span id="batteryLevel" class="status-indicator">--</span>
+                </div>
+                <div class="cal-item">
+                    <span>💾 Almacenamiento:</span> 
+                    <span id="storageSpace" class="status-indicator">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Estado de Grabación -->
+        <div class="status-card" id="recordingStatus">
+            <div id="statusDisplay">
+                <span class="status-indicator status-stopped"></span>
+                <strong>Sistema Detenido</strong>
+            </div>
+            <div class="stats">
+                <div class="stat">
+                    <span class="stat-value" id="recordCount">0</span>
+                    <span class="stat-label">Registros</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="duration">00:00:00</span>
+                    <span class="stat-label">Tiempo</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="currentSpeed">0</span>
+                    <span class="stat-label">km/h</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="dataSize">0</span>
+                    <span class="stat-label">KB</span>
+                </div>
+            </div>
+            
+            <!-- Eventos Detectados -->
+            <div class="events-summary" id="eventsSummary">
+                <div class="event-counter">
+                    <span class="event-icon">⚡</span>
+                    <span class="event-count" id="harshAccelCount">0</span>
+                    <span class="event-label">Aceleración</span>
+                </div>
+                <div class="event-counter">
+                    <span class="event-icon">🚨</span>
+                    <span class="event-count" id="harshBrakeCount">0</span>
+                    <span class="event-label">Frenado</span>
+                </div>
+                <div class="event-counter">
+                    <span class="event-icon">↪️</span>
+                    <span class="event-count" id="aggressiveTurnCount">0</span>
+                    <span class="event-label">Giros</span>
+                </div>
+                <div class="event-counter">
+                    <span class="event-icon">🏃</span>
+                    <span class="event-count" id="speedingCount">0</span>
+                    <span class="event-label">Exceso Vel.</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Alertas y Notificaciones -->
+        <div id="alerts" class="alerts-container"></div>
+        
+        <!-- Controles Principales -->
+        <div class="controls">
+            <button id="startBtn" class="btn btn-primary" disabled>
+                🎯 Iniciar Registro
+            </button>
+            
+            <button id="pauseBtn" class="btn btn-warning hidden" disabled>
+                ⏸️ Pausar
+            </button>
+            
+            <button id="stopBtn" class="btn btn-danger" disabled>
+                ⏹️ Detener Registro
+            </button>
+        </div>
+        
+        <!-- Controles de Exportación -->
+        <div class="export-controls">
+            <div class="export-options">
+                <button id="exportJsonBtn" class="btn btn-secondary" disabled>
+                    📄 Exportar JSON
+                </button>
+                <button id="exportCsvBtn" class="btn btn-secondary" disabled>
+                    📊 Exportar CSV
+                </button>
+                <button id="exportStatsBtn" class="btn btn-info" disabled>
+                    📈 Exportar Estadísticas
+                </button>
+            </div>
+            
+            <div class="quick-actions">
+                <button id="viewStatsBtn" class="btn btn-ghost" disabled>
+                    👁️ Ver Resumen
+                </button>
+                <button id="clearDataBtn" class="btn btn-ghost">
+                    🗑️ Limpiar Datos
+                </button>
+            </div>
+        </div>
+
+        <!-- Panel de Estadísticas (oculto) -->
+        <div id="statsPanel" class="stats-panel hidden">
+            <h3>📊 Estadísticas de la Sesión</h3>
+            <div id="statsContent">
+                <!-- Se llena dinámicamente -->
+            </div>
+        </div>
+    </div>
+    
+    <div class="footer">
+        <div class="footer-status">
+            <div>📱 Mantén la pantalla encendida</div>
+            <div>🔋 Conecta cargador recomendado</div>
+            <div>📍 GPS de alta precisión activo</div>
+        </div>
+        <div class="version-info">
+            v2.0.0 - ITSON 2025 | 
+            <span id="appStatus">Cargando...</span>
+        </div>
+    </div>
+    
+    <!-- Scripts -->
+    <script src="utils.js"></script>
+    <script src="data-processor.js"></script>
+    <script src="calibration.js"></script>
+    <script src="export-manager.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
