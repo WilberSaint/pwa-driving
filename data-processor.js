@@ -1,16 +1,23 @@
-// Procesador de Datos - Monitor de Conducción ITSON v2.0
-// Detección de eventos de conducción agresiva en tiempo real
+// Procesador de Datos CALIBRADO - Monitor de Conducción ITSON v2.1
+// Ajustado para condiciones reales de Sinaloa, México
 
 class DataProcessor {
     constructor() {
-        // Umbrales basados en la literatura científica
+        // Umbrales CALIBRADOS para reducir falsos positivos
         this.thresholds = {
-            harsh_acceleration: 2.5,    // m/s² longitudinal
-            harsh_braking: 2.5,         // m/s² longitudinal (negativo)
-            aggressive_turn: 4.0,       // m/s² lateral
-            speeding: 15,               // km/h sobre límite
-            rapid_acceleration: 3.0,    // m/s² más estricto
-            emergency_braking: 4.0      // m/s² frenado de emergencia
+            // Aceleración - más estrictos para evitar ruido del motor
+            harsh_acceleration: 3.5,    // Era 2.5, ahora 3.5 m/s²
+            harsh_braking: 3.5,         // Era 2.5, ahora 3.5 m/s²
+            aggressive_turn: 5.5,       // Era 4.0, ahora 5.5 m/s²
+            
+            // Velocidad - ajustado para México
+            speeding: 20,               // Era 15, ahora 20 km/h sobre límite
+            minimum_speed: 5,           // Velocidad mínima para detectar eventos (5 km/h)
+            
+            // Filtros anti-ruido
+            acceleration_noise: 1.0,    // Filtrar vibraciones <1.0 m/s²
+            gps_noise: 2.0,            // Filtrar cambios GPS <2 km/h
+            stability_time: 3000       // 3 segundos para confirmar evento
         };
 
         // Contadores de eventos
@@ -21,24 +28,31 @@ class DataProcessor {
             speeding: 0
         };
 
-        // Buffer para análisis temporal
+        // Buffer para análisis temporal Y FILTRADO
         this.dataBuffer = [];
-        this.bufferSize = 10; // Últimos 10 puntos de datos
+        this.bufferSize = 5; // Reducido de 10 a 5 para menos memoria
         
-        // Variables para cálculo de velocidad
+        // Variables para filtrado de ruido
         this.lastGPSPoint = null;
         this.speedHistory = [];
+        this.accelerationHistory = [];
+        this.lastEventTime = {};
         
-        // Variables para detección de patrones
-        this.currentSpeed = 0;
-        this.currentAcceleration = { x: 0, y: 0, z: 0 };
+        // Control de frecuencia de grabación
+        this.lastRecordTime = 0;
+        this.recordInterval = 2000; // 2 segundos entre registros (era 1 segundo)
         
-        // Límites de velocidad por defecto (pueden ser personalizados)
+        // Variables para detección de movimiento real
+        this.isVehicleMoving = false;
+        this.movementConfidence = 0;
+        
+        // Límites de velocidad para Sinaloa
         this.speedLimits = {
-            urban: 50,      // km/h
-            highway: 110,   // km/h
-            school: 30,     // km/h
-            default: 50
+            urban: 60,      // Ciudades de Sinaloa
+            highway: 110,   // Carreteras
+            residential: 40, // Zonas residenciales
+            school: 20,     // Zonas escolares
+            default: 60
         };
         
         this.currentSpeedLimit = this.speedLimits.default;
@@ -46,28 +60,49 @@ class DataProcessor {
         // Sistema de eventos
         this.eventListeners = new Map();
         
-        Utils.log('info', 'DataProcessor inicializado con umbrales', this.thresholds);
+        Utils.log('info', 'DataProcessor CALIBRADO inicializado', this.thresholds);
     }
 
-    // Procesar nuevo punto de datos
+    // Procesar nuevo punto de datos CON FILTRADO
     processDataPoint(rawData) {
         try {
-            // Validar estructura de datos
+            // FILTRO 1: Control de frecuencia
+            const now = Date.now();
+            if (now - this.lastRecordTime < this.recordInterval) {
+                return null; // Descartar registros muy frecuentes
+            }
+            this.lastRecordTime = now;
+
+            // FILTRO 2: Validar estructura de datos
             if (!Utils.validateDataStructure(rawData)) {
                 Utils.log('warn', 'Estructura de datos inválida', rawData);
                 return null;
             }
 
-            // Enriquecer datos con análisis
+            // FILTRO 3: Detectar si el vehículo está realmente en movimiento
+            this.updateMovementDetection(rawData);
+            
+            // Si no hay movimiento real, solo guardar datos básicos sin eventos
+            if (!this.isVehicleMoving) {
+                const basicData = this.enrichBasicData(rawData);
+                this.updateBuffer(basicData);
+                return {
+                    processed: basicData,
+                    events: [], // Sin eventos si no hay movimiento
+                    counters: this.eventCounters
+                };
+            }
+
+            // FILTRO 4: Enriquecer datos con análisis
             const processedData = this.enrichData(rawData);
             
-            // Detectar eventos de conducción agresiva
-            const events = this.detectDrivingEvents(processedData);
+            // FILTRO 5: Detectar eventos SOLO si hay movimiento real
+            const events = this.detectDrivingEventsFiltered(processedData);
             
             // Actualizar buffer
             this.updateBuffer(processedData);
             
-            // Actualizar contadores
+            // Actualizar contadores solo con eventos válidos
             events.forEach(event => {
                 if (this.eventCounters.hasOwnProperty(event.type)) {
                     this.eventCounters[event.type]++;
@@ -81,9 +116,6 @@ class DataProcessor {
                 });
             });
 
-            // Actualizar variables de estado
-            this.updateCurrentState(processedData);
-            
             return {
                 processed: processedData,
                 events: events,
@@ -96,7 +128,101 @@ class DataProcessor {
         }
     }
 
-    // Enriquecer datos con cálculos adicionales
+    // Detectar movimiento real del vehículo
+    updateMovementDetection(rawData) {
+        const speed = rawData.velocidad || 0;
+        const hasAcceleration = rawData.x !== undefined && rawData.y !== undefined && rawData.z !== undefined;
+        
+        // Criterios para considerar que hay movimiento real
+        const speedCriteria = speed > this.thresholds.minimum_speed;
+        const accelerationVariation = hasAcceleration ? this.hasSignificantAcceleration(rawData) : false;
+        const gpsMovement = this.hasGPSMovement(rawData);
+        
+        // Calcular confianza de movimiento (0-100)
+        let confidence = 0;
+        if (speedCriteria) confidence += 40;
+        if (accelerationVariation) confidence += 30;
+        if (gpsMovement) confidence += 30;
+        
+        this.movementConfidence = confidence;
+        this.isVehicleMoving = confidence > 50; // 50% confianza mínima
+        
+        // Log para debugging
+        if (this.isVehicleMoving !== this.wasMoving) {
+            Utils.log('info', `Movimiento detectado: ${this.isVehicleMoving}`, {
+                speed: speed,
+                confidence: confidence,
+                criteria: { speedCriteria, accelerationVariation, gpsMovement }
+            });
+            this.wasMoving = this.isVehicleMoving;
+        }
+    }
+
+    // Verificar si hay aceleración significativa (no ruido)
+    hasSignificantAcceleration(data) {
+        if (!data.x || !data.y || !data.z) return false;
+        
+        // Calcular variación respecto al último registro
+        if (this.accelerationHistory.length > 0) {
+            const last = this.accelerationHistory[this.accelerationHistory.length - 1];
+            const variation = Math.sqrt(
+                Math.pow(data.x - last.x, 2) + 
+                Math.pow(data.y - last.y, 2) + 
+                Math.pow(data.z - last.z, 2)
+            );
+            
+            // Mantener historial de aceleración
+            this.accelerationHistory.push({ x: data.x, y: data.y, z: data.z });
+            if (this.accelerationHistory.length > 5) {
+                this.accelerationHistory.shift();
+            }
+            
+            return variation > this.thresholds.acceleration_noise;
+        }
+        
+        this.accelerationHistory.push({ x: data.x, y: data.y, z: data.z });
+        return false;
+    }
+
+    // Verificar movimiento GPS real
+    hasGPSMovement(data) {
+        if (!data.lat || !data.lon || !this.lastGPSPoint) return false;
+        
+        const distance = Utils.calculateDistance(
+            this.lastGPSPoint.lat, this.lastGPSPoint.lon,
+            data.lat, data.lon
+        );
+        
+        const timeDiff = (Date.now() - this.lastGPSPoint.timestamp) / 1000; // segundos
+        const calculatedSpeed = (distance / timeDiff) * 3.6; // km/h
+        
+        this.lastGPSPoint = {
+            lat: data.lat,
+            lon: data.lon,
+            timestamp: Date.now()
+        };
+        
+        return calculatedSpeed > this.thresholds.gps_noise;
+    }
+
+    // Enriquecimiento básico sin procesamiento complejo
+    enrichBasicData(rawData) {
+        const enriched = { ...rawData };
+        
+        // Solo cálculos básicos
+        if (rawData.x !== undefined && rawData.y !== undefined && rawData.z !== undefined) {
+            enriched.acceleration_magnitude = Math.sqrt(
+                rawData.x ** 2 + rawData.y ** 2 + rawData.z ** 2
+            );
+        }
+        
+        enriched.vehicle_moving = this.isVehicleMoving;
+        enriched.movement_confidence = this.movementConfidence;
+        
+        return enriched;
+    }
+
+    // Enriquecer datos CON FILTROS
     enrichData(rawData) {
         const enriched = { ...rawData };
         const now = new Date(rawData.timestamp);
@@ -107,235 +233,175 @@ class DataProcessor {
                 rawData.x ** 2 + rawData.y ** 2 + rawData.z ** 2
             );
             
-            // Aceleración sin gravedad (aproximada)
-            enriched.linear_acceleration = {
-                x: rawData.x,
-                y: rawData.y,
-                z: rawData.z - 9.81 // Restar gravedad aproximada
+            // Aceleración lineal filtrada (removiendo ruido)
+            enriched.filtered_acceleration = {
+                x: Math.abs(rawData.x) > this.thresholds.acceleration_noise ? rawData.x : 0,
+                y: Math.abs(rawData.y) > this.thresholds.acceleration_noise ? rawData.y : 0,
+                z: Math.abs(rawData.z) > this.thresholds.acceleration_noise ? rawData.z : 0
             };
         }
 
-        // Calcular velocidad si no está disponible del GPS
-        if (rawData.lat && rawData.lon && this.lastGPSPoint) {
-            const timeDiff = now - new Date(this.lastGPSPoint.timestamp);
-            if (timeDiff > 0) {
-                const calculatedSpeed = Utils.calculateSpeed(
-                    this.lastGPSPoint.lat,
-                    this.lastGPSPoint.lon,
-                    rawData.lat,
-                    rawData.lon,
-                    timeDiff
-                );
-                
-                // Usar velocidad calculada si GPS no la proporciona
-                if (!rawData.velocidad || rawData.velocidad === 0) {
-                    enriched.velocidad = Math.max(0, calculatedSpeed);
-                }
-                
-                enriched.calculated_speed = calculatedSpeed;
+        // Velocidad filtrada
+        if (rawData.velocidad !== undefined) {
+            // Mantener historial de velocidad para filtrado
+            this.speedHistory.push(rawData.velocidad);
+            if (this.speedHistory.length > 5) {
+                this.speedHistory.shift();
             }
+            
+            // Velocidad promedio de los últimos 5 registros
+            enriched.filtered_speed = this.speedHistory.reduce((a, b) => a + b, 0) / this.speedHistory.length;
         }
 
-        // Actualizar último punto GPS
-        if (rawData.lat && rawData.lon) {
-            this.lastGPSPoint = {
-                lat: rawData.lat,
-                lon: rawData.lon,
-                timestamp: rawData.timestamp
-            };
-        }
-
-        // Calcular aceleración longitudinal y lateral
-        if (this.dataBuffer.length > 0) {
+        // Calcular aceleración longitudinal FILTRADA
+        if (this.dataBuffer.length > 0 && enriched.filtered_speed !== undefined) {
             const lastPoint = this.dataBuffer[this.dataBuffer.length - 1];
             const timeDelta = (now - new Date(lastPoint.timestamp)) / 1000; // segundos
             
-            if (timeDelta > 0 && enriched.velocidad !== undefined && lastPoint.velocidad !== undefined) {
-                enriched.longitudinal_acceleration = (enriched.velocidad - lastPoint.velocidad) / timeDelta / 3.6; // m/s²
+            if (timeDelta > 0 && lastPoint.filtered_speed !== undefined) {
+                const deltaSpeed = enriched.filtered_speed - lastPoint.filtered_speed;
+                enriched.longitudinal_acceleration = (deltaSpeed / timeDelta) / 3.6; // m/s²
             }
         }
 
-        // Determinar contexto de conducción
-        enriched.driving_context = this.determineDrivingContext(enriched);
-        
-        // Actualizar límite de velocidad basado en contexto
+        // Contexto de conducción para Sinaloa
+        enriched.driving_context = this.determineDrivingContextSinaloa(enriched);
         this.updateSpeedLimit(enriched.driving_context);
         enriched.speed_limit = this.currentSpeedLimit;
+        
+        // Metadatos de filtrado
+        enriched.vehicle_moving = this.isVehicleMoving;
+        enriched.movement_confidence = this.movementConfidence;
         
         return enriched;
     }
 
-    // Detectar eventos de conducción agresiva
-    detectDrivingEvents(data) {
+    // Detectar eventos CON FILTROS ANTI-RUIDO
+    detectDrivingEventsFiltered(data) {
         const events = [];
         const timestamp = data.timestamp;
+        const now = Date.now();
 
-        // 1. Detección de aceleración brusca (longitudinal)
+        // FILTRO: Solo detectar eventos si hay movimiento real y velocidad mínima
+        if (!this.isVehicleMoving || (data.filtered_speed || 0) < this.thresholds.minimum_speed) {
+            return events;
+        }
+
+        // FILTRO: Evitar eventos duplicados muy cercanos en tiempo
+        const minTimeBetweenEvents = this.thresholds.stability_time;
+
+        // 1. Aceleración brusca FILTRADA
         if (data.longitudinal_acceleration && data.longitudinal_acceleration > this.thresholds.harsh_acceleration) {
-            events.push({
-                type: 'harsh_acceleration',
-                severity: this.calculateSeverity(data.longitudinal_acceleration, this.thresholds.harsh_acceleration),
-                value: data.longitudinal_acceleration,
-                timestamp: timestamp,
-                location: { lat: data.lat, lon: data.lon }
-            });
+            if (!this.lastEventTime.harsh_acceleration || 
+                now - this.lastEventTime.harsh_acceleration > minTimeBetweenEvents) {
+                
+                events.push({
+                    type: 'harsh_acceleration',
+                    severity: this.calculateSeverity(data.longitudinal_acceleration, this.thresholds.harsh_acceleration),
+                    value: data.longitudinal_acceleration,
+                    timestamp: timestamp,
+                    location: { lat: data.lat, lon: data.lon },
+                    speed: data.filtered_speed,
+                    confidence: this.movementConfidence
+                });
+                
+                this.lastEventTime.harsh_acceleration = now;
+            }
         }
 
-        // 2. Detección de frenado brusco (longitudinal negativo)
+        // 2. Frenado brusco FILTRADO
         if (data.longitudinal_acceleration && data.longitudinal_acceleration < -this.thresholds.harsh_braking) {
-            const severity = Math.abs(data.longitudinal_acceleration) > this.thresholds.emergency_braking ? 'emergency' : 'harsh';
-            
-            events.push({
-                type: 'harsh_braking',
-                severity: severity,
-                value: Math.abs(data.longitudinal_acceleration),
-                timestamp: timestamp,
-                location: { lat: data.lat, lon: data.lon }
-            });
-        }
-
-        // 3. Detección de giros agresivos (lateral)
-        if (data.x !== undefined && Math.abs(data.x) > this.thresholds.aggressive_turn) {
-            events.push({
-                type: 'aggressive_turn',
-                severity: this.calculateSeverity(Math.abs(data.x), this.thresholds.aggressive_turn),
-                value: Math.abs(data.x),
-                direction: data.x > 0 ? 'right' : 'left',
-                timestamp: timestamp,
-                location: { lat: data.lat, lon: data.lon }
-            });
-        }
-
-        // 4. Detección de exceso de velocidad
-        if (data.velocidad && data.velocidad > (this.currentSpeedLimit + this.thresholds.speeding)) {
-            const excess = data.velocidad - this.currentSpeedLimit;
-            events.push({
-                type: 'speeding',
-                severity: this.calculateSpeedingSeverity(excess),
-                value: excess,
-                speed: data.velocidad,
-                limit: this.currentSpeedLimit,
-                timestamp: timestamp,
-                location: { lat: data.lat, lon: data.lon }
-            });
-        }
-
-        // 5. Detección de patrones complejos
-        const complexEvents = this.detectComplexPatterns(data);
-        events.push(...complexEvents);
-
-        return events;
-    }
-
-    // Detectar patrones complejos de conducción
-    detectComplexPatterns(data) {
-        const events = [];
-        
-        if (this.dataBuffer.length < 5) return events; // Necesitamos historial
-
-        // Detección de zigzag/weaving
-        const lateralChanges = this.detectZigzagPattern();
-        if (lateralChanges) {
-            events.push({
-                type: 'zigzag_driving',
-                severity: 'moderate',
-                pattern: lateralChanges,
-                timestamp: data.timestamp,
-                location: { lat: data.lat, lon: data.lon }
-            });
-        }
-
-        // Detección de aceleración/frenado repetitivo
-        const pumpingPattern = this.detectPumpingPattern();
-        if (pumpingPattern) {
-            events.push({
-                type: 'pumping_behavior',
-                severity: 'moderate',
-                pattern: pumpingPattern,
-                timestamp: data.timestamp,
-                location: { lat: data.lat, lon: data.lon }
-            });
-        }
-
-        return events;
-    }
-
-    // Detectar patrón de zigzag
-    detectZigzagPattern() {
-        const lateralValues = this.dataBuffer.slice(-8).map(d => d.x || 0);
-        let changes = 0;
-        let lastDirection = null;
-
-        for (let i = 1; i < lateralValues.length; i++) {
-            const current = lateralValues[i];
-            const direction = current > 0 ? 'right' : 'left';
-            
-            if (Math.abs(current) > 1.5 && lastDirection && direction !== lastDirection) {
-                changes++;
-            }
-            
-            if (Math.abs(current) > 1.5) {
-                lastDirection = direction;
+            if (!this.lastEventTime.harsh_braking || 
+                now - this.lastEventTime.harsh_braking > minTimeBetweenEvents) {
+                
+                events.push({
+                    type: 'harsh_braking',
+                    severity: this.calculateSeverity(Math.abs(data.longitudinal_acceleration), this.thresholds.harsh_braking),
+                    value: Math.abs(data.longitudinal_acceleration),
+                    timestamp: timestamp,
+                    location: { lat: data.lat, lon: data.lon },
+                    speed: data.filtered_speed,
+                    confidence: this.movementConfidence
+                });
+                
+                this.lastEventTime.harsh_braking = now;
             }
         }
 
-        return changes >= 4 ? { changes, frequency: changes / 8 } : null;
-    }
-
-    // Detectar patrón de aceleración/frenado repetitivo
-    detectPumpingPattern() {
-        if (this.dataBuffer.length < 6) return null;
-
-        const accelerations = this.dataBuffer.slice(-6).map(d => d.longitudinal_acceleration || 0);
-        let alternations = 0;
-        let lastSign = null;
-
-        for (const accel of accelerations) {
-            if (Math.abs(accel) > 1.0) {
-                const sign = accel > 0 ? 1 : -1;
-                if (lastSign && sign !== lastSign) {
-                    alternations++;
+        // 3. Giros agresivos FILTRADOS (solo con velocidad >15 km/h)
+        if (data.filtered_acceleration && data.filtered_speed > 15) {
+            const lateralG = Math.abs(data.filtered_acceleration.x);
+            
+            if (lateralG > this.thresholds.aggressive_turn) {
+                if (!this.lastEventTime.aggressive_turn || 
+                    now - this.lastEventTime.aggressive_turn > minTimeBetweenEvents) {
+                    
+                    events.push({
+                        type: 'aggressive_turn',
+                        severity: this.calculateSeverity(lateralG, this.thresholds.aggressive_turn),
+                        value: lateralG,
+                        direction: data.filtered_acceleration.x > 0 ? 'right' : 'left',
+                        timestamp: timestamp,
+                        location: { lat: data.lat, lon: data.lon },
+                        speed: data.filtered_speed,
+                        confidence: this.movementConfidence
+                    });
+                    
+                    this.lastEventTime.aggressive_turn = now;
                 }
-                lastSign = sign;
             }
         }
 
-        return alternations >= 3 ? { alternations, intensity: alternations / 6 } : null;
+        // 4. Exceso de velocidad (solo con velocidad >30 km/h)
+        if (data.filtered_speed && data.filtered_speed > 30) {
+            const excess = data.filtered_speed - this.currentSpeedLimit;
+            
+            if (excess > this.thresholds.speeding) {
+                if (!this.lastEventTime.speeding || 
+                    now - this.lastEventTime.speeding > (minTimeBetweenEvents * 3)) { // Más tiempo para speeding
+                    
+                    events.push({
+                        type: 'speeding',
+                        severity: this.calculateSpeedingSeverity(excess),
+                        value: excess,
+                        speed: data.filtered_speed,
+                        limit: this.currentSpeedLimit,
+                        timestamp: timestamp,
+                        location: { lat: data.lat, lon: data.lon },
+                        confidence: this.movementConfidence
+                    });
+                    
+                    this.lastEventTime.speeding = now;
+                }
+            }
+        }
+
+        return events;
     }
 
-    // Calcular severidad del evento
-    calculateSeverity(value, threshold) {
-        const ratio = value / threshold;
-        if (ratio >= 2.0) return 'extreme';
-        if (ratio >= 1.5) return 'high';
-        if (ratio >= 1.2) return 'moderate';
-        return 'low';
+    // Contexto de conducción específico para Sinaloa
+    determineDrivingContextSinaloa(data) {
+        const speed = data.filtered_speed || 0;
+        
+        // Basado en velocidades típicas en Sinaloa
+        if (speed > 90) return 'highway';      // Carreteras/autopistas
+        if (speed > 50) return 'urban_fast';   // Avenidas principales
+        if (speed > 20) return 'urban';        // Calles urbanas
+        if (speed > 5) return 'residential';   // Zonas residenciales
+        return 'stationary';                   // Detenido
     }
 
-    // Calcular severidad de exceso de velocidad
-    calculateSpeedingSeverity(excess) {
-        if (excess >= 30) return 'extreme';
-        if (excess >= 20) return 'high';
-        if (excess >= 10) return 'moderate';
-        return 'low';
-    }
-
-    // Determinar contexto de conducción
-    determineDrivingContext(data) {
-        // Basado en velocidad y ubicación (simplificado)
-        if (data.velocidad > 80) return 'highway';
-        if (data.velocidad < 25) return 'urban_slow';
-        return 'urban';
-    }
-
-    // Actualizar límite de velocidad
+    // Actualizar límites de velocidad para Sinaloa
     updateSpeedLimit(context) {
         switch (context) {
             case 'highway':
                 this.currentSpeedLimit = this.speedLimits.highway;
                 break;
-            case 'urban_slow':
-                this.currentSpeedLimit = this.speedLimits.school;
+            case 'urban_fast':
+                this.currentSpeedLimit = 70; // Avenidas rápidas
+                break;
+            case 'residential':
+                this.currentSpeedLimit = this.speedLimits.residential;
                 break;
             case 'urban':
             default:
@@ -344,7 +410,24 @@ class DataProcessor {
         }
     }
 
-    // Actualizar buffer de datos
+    // Calcular severidad del evento
+    calculateSeverity(value, threshold) {
+        const ratio = value / threshold;
+        if (ratio >= 2.5) return 'extreme';
+        if (ratio >= 2.0) return 'high';
+        if (ratio >= 1.5) return 'moderate';
+        return 'low';
+    }
+
+    // Calcular severidad de exceso de velocidad
+    calculateSpeedingSeverity(excess) {
+        if (excess >= 40) return 'extreme';
+        if (excess >= 30) return 'high';
+        if (excess >= 20) return 'moderate';
+        return 'low';
+    }
+
+    // Actualizar buffer con límite de memoria
     updateBuffer(data) {
         this.dataBuffer.push(data);
         if (this.dataBuffer.length > this.bufferSize) {
@@ -352,36 +435,27 @@ class DataProcessor {
         }
     }
 
-    // Actualizar estado actual
-    updateCurrentState(data) {
-        this.currentSpeed = data.velocidad || 0;
-        if (data.x !== undefined) {
-            this.currentAcceleration = {
-                x: data.x,
-                y: data.y || 0,
-                z: data.z || 0
-            };
-        }
-    }
-
-    // Generar estadísticas de la sesión
+    // Generar estadísticas de la sesión FILTRADAS
     generateSessionStats(allData) {
         if (!allData || allData.length === 0) {
-            return {
-                error: 'No hay datos para analizar'
-            };
+            return { error: 'No hay datos para analizar' };
         }
 
+        // Filtrar solo datos con movimiento real
+        const movingData = allData.filter(d => d.vehicle_moving);
         const totalDistance = this.calculateTotalDistance(allData);
         const totalTime = this.calculateTotalTime(allData);
-        const eventsPerKm = this.calculateEventsPerKm(totalDistance);
+        const movingTime = this.calculateTotalTime(movingData);
 
         return {
             session_summary: {
                 total_records: allData.length,
+                moving_records: movingData.length,
+                stationary_records: allData.length - movingData.length,
                 total_distance_km: Utils.formatNumber(totalDistance / 1000, 2),
                 total_time_minutes: Utils.formatNumber(totalTime / 60000, 1),
-                average_speed: Utils.formatNumber(this.calculateAverageSpeed(allData), 1),
+                moving_time_minutes: Utils.formatNumber(movingTime / 60000, 1),
+                average_speed: Utils.formatNumber(this.calculateAverageSpeed(movingData), 1),
                 max_speed: Utils.formatNumber(this.calculateMaxSpeed(allData), 1)
             },
             events_summary: {
@@ -391,13 +465,18 @@ class DataProcessor {
                 aggressive_turns: this.eventCounters.aggressive_turn,
                 speeding_events: this.eventCounters.speeding
             },
-            events_per_km: eventsPerKm,
-            risk_assessment: this.calculateRiskScore(eventsPerKm, totalDistance),
-            recommendations: this.generateRecommendations(eventsPerKm)
+            events_per_km: this.calculateEventsPerKm(totalDistance),
+            data_quality: {
+                movement_detection_accuracy: Utils.formatNumber((movingData.length / allData.length) * 100, 1) + '%',
+                average_confidence: Utils.formatNumber(
+                    allData.reduce((sum, d) => sum + (d.movement_confidence || 0), 0) / allData.length, 1
+                ) + '%'
+            },
+            risk_assessment: this.calculateRiskScore(this.calculateEventsPerKm(totalDistance), totalDistance)
         };
     }
 
-    // Calcular distancia total
+    // Métodos auxiliares (sin cambios significativos)
     calculateTotalDistance(data) {
         let totalDistance = 0;
         let lastPoint = null;
@@ -417,7 +496,6 @@ class DataProcessor {
         return totalDistance;
     }
 
-    // Calcular tiempo total
     calculateTotalTime(data) {
         if (data.length < 2) return 0;
         
@@ -426,7 +504,6 @@ class DataProcessor {
         return end - start;
     }
 
-    // Calcular eventos por kilómetro
     calculateEventsPerKm(totalDistanceMeters) {
         const totalKm = totalDistanceMeters / 1000;
         if (totalKm === 0) return {};
@@ -440,34 +517,32 @@ class DataProcessor {
         };
     }
 
-    // Calcular velocidad promedio
     calculateAverageSpeed(data) {
-        const speeds = data.filter(d => d.velocidad && d.velocidad > 0).map(d => d.velocidad);
+        const speeds = data.filter(d => d.filtered_speed > 5).map(d => d.filtered_speed);
         return speeds.length > 0 ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0;
     }
 
-    // Calcular velocidad máxima
     calculateMaxSpeed(data) {
         const speeds = data.filter(d => d.velocidad).map(d => d.velocidad);
         return speeds.length > 0 ? Math.max(...speeds) : 0;
     }
 
-    // Calcular puntuación de riesgo
     calculateRiskScore(eventsPerKm, totalDistance) {
         const totalEventsPerKm = parseFloat(eventsPerKm.total_events_per_km || 0);
         
         let risk = 'low';
         let score = 0;
 
-        if (totalEventsPerKm > 5) {
+        // Ajustado para condiciones mexicanas
+        if (totalEventsPerKm > 3) {
             risk = 'high';
-            score = 80 + Math.min(totalEventsPerKm * 2, 20);
-        } else if (totalEventsPerKm > 2) {
+            score = 70 + Math.min(totalEventsPerKm * 5, 30);
+        } else if (totalEventsPerKm > 1) {
             risk = 'moderate';
-            score = 40 + totalEventsPerKm * 10;
+            score = 30 + totalEventsPerKm * 20;
         } else {
             risk = 'low';
-            score = totalEventsPerKm * 20;
+            score = totalEventsPerKm * 30;
         }
 
         return {
@@ -480,58 +555,21 @@ class DataProcessor {
     getRiskDescription(risk) {
         switch (risk) {
             case 'high':
-                return 'Patrón de conducción agresiva detectado. Se recomienda modificar comportamiento.';
+                return 'Patrón de conducción agresiva detectado. Revisar técnicas de manejo.';
             case 'moderate':
-                return 'Algunos eventos de conducción agresiva detectados. Área de mejora identificada.';
+                return 'Algunos eventos detectados. Oportunidad de mejora identificada.';
             case 'low':
             default:
-                return 'Patrón de conducción seguro. Continuar con buenas prácticas.';
+                return 'Patrón de conducción seguro. Excelente desempeño.';
         }
     }
 
-    // Generar recomendaciones
-    generateRecommendations(eventsPerKm) {
-        const recommendations = [];
-        
-        if (parseFloat(eventsPerKm.harsh_acceleration_per_km || 0) > 1) {
-            recommendations.push('Reducir aceleraciones bruscas. Acelerar gradualmente.');
-        }
-        
-        if (parseFloat(eventsPerKm.harsh_braking_per_km || 0) > 1) {
-            recommendations.push('Mantener mayor distancia de seguimiento para evitar frenadas bruscas.');
-        }
-        
-        if (parseFloat(eventsPerKm.aggressive_turns_per_km || 0) > 0.5) {
-            recommendations.push('Reducir velocidad en curvas y giros.');
-        }
-        
-        if (parseFloat(eventsPerKm.speeding_per_km || 0) > 0.5) {
-            recommendations.push('Respetar límites de velocidad establecidos.');
-        }
-
-        if (recommendations.length === 0) {
-            recommendations.push('Excelente conducción. Mantener comportamiento seguro.');
-        }
-
-        return recommendations;
-    }
-
-    // Sistema de eventos
+    // Sistema de eventos (sin cambios)
     addEventListener(eventType, callback) {
         if (!this.eventListeners.has(eventType)) {
             this.eventListeners.set(eventType, []);
         }
         this.eventListeners.get(eventType).push(callback);
-    }
-
-    removeEventListener(eventType, callback) {
-        if (this.eventListeners.has(eventType)) {
-            const callbacks = this.eventListeners.get(eventType);
-            const index = callbacks.indexOf(callback);
-            if (index > -1) {
-                callbacks.splice(index, 1);
-            }
-        }
     }
 
     emitEvent(eventType, data) {
@@ -553,23 +591,20 @@ class DataProcessor {
         });
         this.dataBuffer = [];
         this.lastGPSPoint = null;
+        this.accelerationHistory = [];
+        this.speedHistory = [];
+        this.lastEventTime = {};
+        this.isVehicleMoving = false;
+        this.movementConfidence = 0;
     }
 
-    // Obtener contadores actuales
     getCurrentCounters() {
         return { ...this.eventCounters };
     }
 
-    // Configurar umbrales personalizados
     setThresholds(newThresholds) {
         this.thresholds = { ...this.thresholds, ...newThresholds };
-        Utils.log('info', 'Umbrales actualizados', this.thresholds);
-    }
-
-    // Configurar límites de velocidad personalizados
-    setSpeedLimits(newLimits) {
-        this.speedLimits = { ...this.speedLimits, ...newLimits };
-        Utils.log('info', 'Límites de velocidad actualizados', this.speedLimits);
+        Utils.log('info', 'Umbrales actualizados para Sinaloa', this.thresholds);
     }
 }
 
